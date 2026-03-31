@@ -1,9 +1,19 @@
-"""ProfPick — Rate My Professor browser built with Streamlit."""
+"""ProfPick Streamlit app."""
+
+from __future__ import annotations
 
 import streamlit as st
-from rmp_data import get_professor_cards, ProfessorCard
+from streamlit_searchbox import st_searchbox
 
-# ── Page config ──────────────────────────────────────────────────────────────
+from rmp_data import (
+    DEFAULT_SNIPPET_BATCH,
+    ProfessorCard,
+    SchoolOption,
+    search_school_options,
+    hydrate_snippets,
+    get_professor_cards,
+)
+
 st.set_page_config(
     page_title="ProfPick",
     page_icon="🎓",
@@ -11,334 +21,460 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown(
-    """
-    <style>
-    /* Dark base */
-    html, body, [data-testid="stAppViewContainer"] {
-        background-color: #0e1117;
-        color: #e0e0e0;
-    }
-    [data-testid="stHeader"] { background-color: #0e1117; }
+    """<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    html,body,[data-testid="stAppViewContainer"]{font-family:'Inter',sans-serif;background:#07090f;color:#e2e8f0;}
+    header[data-testid="stHeader"]{display:none!important;}
+    [data-testid="stToolbar"]{display:none!important;}
+    [data-testid="stDecoration"]{display:none!important;}
+    [data-testid="stStatusWidget"]{display:none!important;}
+    footer{display:none!important;}
+    #MainMenu{display:none!important;}
+    .block-container{max-width:1060px;padding-top:2rem;padding-bottom:5rem;}
 
-    /* Hide Streamlit footer */
-    footer { visibility: hidden; }
+    .hero{padding:2rem 0 1.8rem 0;text-align:center;}
+    .hero-title{font-size:2.5rem;font-weight:800;letter-spacing:-0.05em;line-height:1.1;
+        background:linear-gradient(135deg,#f1f5f9 30%,#60a5fa 100%);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:.5rem;}
+    .hero-sub{font-size:.92rem;color:#475569;line-height:1.6;}
 
-    /* Search inputs */
-    .stTextInput > div > div > input {
-        background-color: #1c2333;
-        color: #e0e0e0;
-        border: 1px solid #2d3748;
-        border-radius: 8px;
-    }
-    .stTextInput label { color: #a0aec0 !important; font-size: 0.85rem; }
+    .search-panel{background:rgba(15,23,42,.65);border:1px solid #1e293b;border-radius:16px;
+        padding:1.4rem 1.6rem 1.2rem 1.6rem;margin-bottom:2rem;}
 
-    /* Select box */
-    .stSelectbox > div > div {
-        background-color: #1c2333;
-        color: #e0e0e0;
-        border: 1px solid #2d3748;
-        border-radius: 8px;
-    }
+    .stTextInput>div>div>input{background:#0d1117!important;color:#e2e8f0!important;
+        border:1px solid #1e293b!important;border-radius:10px!important;font-size:.9rem!important;
+        transition:border-color .15s,box-shadow .15s;}
+    .stTextInput>div>div>input:focus{border-color:#2563eb!important;box-shadow:0 0 0 3px rgba(37,99,235,.14)!important;}
+    .stTextInput label,.stSelectbox label{color:#64748b!important;font-size:.75rem!important;
+        font-weight:600!important;letter-spacing:.07em!important;text-transform:uppercase!important;}
 
-    /* Professor card */
-    .prof-card {
-        background: #1a1f2e;
-        border: 1px solid #2d3748;
-        border-radius: 12px;
-        padding: 20px 24px;
-        margin-bottom: 16px;
-        position: relative;
-    }
-    .prof-card:hover { border-color: #4a5568; }
+    /* searchbox component container */
+    [data-testid="stCustomComponentV1"]{border-radius:10px;overflow:visible;}
+    [data-testid="stCustomComponentV1"] iframe{outline:none!important;border:none!important;}
 
-    /* Rating badge */
-    .rating-badge {
-        display: inline-block;
-        font-size: 2rem;
-        font-weight: 700;
-        padding: 8px 18px;
-        border-radius: 10px;
-        line-height: 1;
-    }
-    .rating-green  { background: #1a3a2a; color: #68d391; }
-    .rating-yellow { background: #3a3420; color: #f6e05e; }
-    .rating-red    { background: #3a1a1a; color: #fc8181; }
-    .rating-gray   { background: #2d3748; color: #a0aec0; }
+    .stButton>button{background:#2563eb!important;color:#fff!important;border:none!important;
+        border-radius:10px!important;font-weight:700!important;font-size:.88rem!important;
+        width:100%!important;transition:background .15s!important;}
+    .stButton>button:hover{background:#1d4ed8!important;}
 
-    /* Stat pills */
-    .stat-pill {
-        display: inline-block;
-        background: #2d3748;
-        border-radius: 20px;
-        padding: 4px 12px;
-        font-size: 0.82rem;
-        color: #a0aec0;
-        margin-right: 8px;
-        margin-bottom: 6px;
-    }
-    .stat-pill span { color: #e2e8f0; font-weight: 600; }
+    @keyframes podiumRise{from{transform:translateY(80px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+    @keyframes crownBounce{0%,100%{transform:translateY(0) scale(1);}45%{transform:translateY(-12px) scale(1.12);}75%{transform:translateY(-5px) scale(1.05);}}
 
-    /* Course tags */
-    .course-tag {
-        display: inline-block;
-        background: #1e3a5f;
-        color: #90cdf4;
-        border-radius: 6px;
-        padding: 2px 8px;
-        font-size: 0.75rem;
-        margin-right: 4px;
-        margin-bottom: 4px;
-    }
+    .podium-section{margin-bottom:2rem;border-radius:20px;overflow:hidden;
+        background:rgba(10,14,26,.80);border:1px solid #1e293b;}
+    .podium-hdr{text-align:center;padding:1.4rem 1rem .4rem 1rem;font-size:.62rem;font-weight:700;
+        letter-spacing:.22em;text-transform:uppercase;color:#334155;}
+    .podium-stage{display:flex;align-items:flex-end;justify-content:center;padding:0 1.5rem;gap:0;}
+    .podium-col{display:flex;flex-direction:column;align-items:center;flex:1;max-width:320px;
+        animation:podiumRise .6s cubic-bezier(.34,1.5,.64,1) both;}
+    .p-avatar{font-size:2.8rem;line-height:1;margin-bottom:.1rem;
+        animation:crownBounce .6s ease-in-out 1.7s 2 both;}
+    .p-medal{font-size:1.15rem;margin-bottom:.35rem;}
+    .p-name{font-size:.84rem;font-weight:700;color:#f1f5f9;text-align:center;
+        max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+        margin-bottom:.2rem;padding:0 .5rem;}
+    .p-dept{font-size:.67rem;color:#475569;margin-bottom:.3rem;text-align:center;
+        max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .p-score{font-size:1.8rem;font-weight:800;border-radius:10px;
+        padding:.18rem .7rem;margin-bottom:.5rem;line-height:1;}
+    .p-block{width:100%;display:flex;flex-direction:column;align-items:center;
+        justify-content:flex-start;padding-top:.7rem;border-radius:10px 10px 0 0;}
+    .p-block-1{height:130px;background:linear-gradient(180deg,rgba(120,80,0,.35) 0%,rgba(30,16,0,.80) 100%);
+        border:1px solid rgba(251,191,36,.25);border-bottom:none;box-shadow:0 0 40px rgba(251,191,36,.06) inset;}
+    .p-block-2{height:92px;background:linear-gradient(180deg,rgba(71,85,105,.22) 0%,rgba(15,23,42,.80) 100%);
+        border:1px solid rgba(100,116,139,.18);border-bottom:none;}
+    .p-block-3{height:62px;background:linear-gradient(180deg,rgba(5,90,60,.18) 0%,rgba(15,23,42,.80) 100%);
+        border:1px solid rgba(52,211,153,.12);border-bottom:none;}
+    .p-rank-lbl{font-size:.65rem;font-weight:800;letter-spacing:.1em;opacity:.35;}
+    .p-rank-lbl-1{color:#fbbf24;}.p-rank-lbl-2{color:#94a3b8;}.p-rank-lbl-3{color:#34d399;}
+    .podium-footer{padding:0 1.5rem 1.4rem 1.5rem;display:flex;gap:0;}
+    .p-quote{flex:1;max-width:320px;font-size:.71rem;color:#475569;font-style:italic;
+        text-align:center;line-height:1.45;padding:.6rem .6rem 0 .6rem;}
 
-    /* Review snippet */
-    .snippet {
-        background: #0e1117;
-        border-left: 3px solid #4a5568;
-        border-radius: 0 8px 8px 0;
-        padding: 8px 12px;
-        margin: 6px 0;
-        font-size: 0.83rem;
-        color: #cbd5e0;
-    }
-    .snippet-meta {
-        font-size: 0.72rem;
-        color: #718096;
-        margin-bottom: 2px;
-    }
+    .rating-green{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(52,211,153,.20);}
+    .rating-yellow{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.20);}
+    .rating-red{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(248,113,113,.20);}
+    .rating-gray{background:rgba(71,85,105,.25);color:#94a3b8;border:1px solid rgba(148,163,184,.15);}
 
-    /* Section headers */
-    .section-label {
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #718096;
-        margin-bottom: 6px;
-    }
+    .results-bar{display:flex;align-items:center;gap:.75rem;margin-bottom:1.2rem;
+        font-size:.82rem;color:#475569;}
+    .results-bar strong{color:#94a3b8;font-weight:700;}
+    .results-bar .rschool{color:#60a5fa;font-weight:600;}
 
-    /* Prof name */
-    .prof-name {
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin-bottom: 2px;
-    }
-    .prof-dept {
-        font-size: 0.85rem;
-        color: #718096;
-        margin-bottom: 12px;
-    }
+    .prof-card{background:rgba(10,14,26,.85);border:1px solid #1e293b;border-radius:14px;
+        padding:18px 20px;margin-bottom:10px;transition:border-color .15s;}
+    .prof-card:hover{border-color:#2563eb40;}
+    .card-rating{display:flex;align-items:center;justify-content:center;font-size:1.75rem;
+        font-weight:800;width:70px;height:70px;border-radius:12px;flex-shrink:0;line-height:1;}
+    .card-out-of{font-size:.64rem;color:#334155;text-align:center;margin-top:.25rem;}
+    .rank-chip{display:inline-block;font-size:.66rem;font-weight:700;color:#334155;
+        background:#0d1117;border:1px solid #1e293b;border-radius:5px;
+        padding:.12rem .38rem;margin-right:.38rem;}
+    .card-name{font-size:1.1rem;font-weight:700;color:#f1f5f9;margin-bottom:.1rem;}
+    .card-dept{font-size:.78rem;color:#475569;margin-bottom:.45rem;}
+    .card-summary{font-size:.79rem;color:#64748b;font-style:italic;margin-bottom:.55rem;
+        line-height:1.45;border-left:2px solid #1e293b;padding-left:.6rem;}
+    .stat-row{display:flex;flex-wrap:wrap;gap:.35rem;}
+    .stat-chip{display:inline-flex;align-items:center;gap:.3rem;background:#0d1117;
+        border:1px solid #1e293b;border-radius:7px;padding:.22rem .55rem;
+        font-size:.76rem;color:#475569;}
+    .stat-chip strong{color:#94a3b8;font-weight:600;}
+    .section-lbl{font-size:.62rem;text-transform:uppercase;letter-spacing:.14em;
+        color:#1e293b;font-weight:700;margin:.85rem 0 .35rem 0;}
+    .course-wrap{display:flex;flex-wrap:wrap;gap:.25rem;}
+    .course-tag{background:rgba(37,99,235,.09);color:#60a5fa;border:1px solid rgba(59,130,246,.18);
+        border-radius:5px;padding:.18rem .5rem;font-size:.72rem;font-weight:500;
+        font-family:'SF Mono',monospace;}
+    .snippet{background:#07090f;border:1px solid #1e293b;border-radius:8px;
+        padding:.6rem .75rem;margin-top:.35rem;color:#94a3b8;font-size:.82rem;line-height:1.5;}
+    .snippet-meta{font-size:.66rem;color:#334155;margin-bottom:.25rem;}
 
-    /* No results */
-    .no-results {
-        text-align: center;
-        padding: 60px 20px;
-        color: #718096;
-        font-size: 1rem;
-    }
+    [data-testid="stAlert"]{background:rgba(239,68,68,.07)!important;
+        border:1px solid rgba(239,68,68,.20)!important;border-radius:10px!important;color:#fca5a5!important;}
+    .stCaption{color:#334155!important;font-size:.76rem!important;}
 
-    /* Search button */
-    .stButton > button {
-        background: #3b82f6;
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 0.5rem 2rem;
-        font-weight: 600;
-        width: 100%;
-    }
-    .stButton > button:hover { background: #2563eb; }
-
-    /* Spinner */
-    [data-testid="stSpinner"] > div { color: #3b82f6 !important; }
-    </style>
-    """,
+    .empty-wrap{text-align:center;padding:4rem 1rem 3rem;}
+    .empty-title{font-size:1.1rem;font-weight:700;color:#1e293b;margin-bottom:.5rem;}
+    .empty-steps{display:flex;justify-content:center;align-items:center;
+        gap:.75rem;margin-top:1.8rem;flex-wrap:wrap;}
+    .step-pill{display:flex;align-items:center;gap:.5rem;background:rgba(15,23,42,.7);
+        border:1px solid #1e293b;border-radius:999px;padding:.4rem .9rem;
+        font-size:.78rem;color:#475569;}
+    .step-num{width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+        background:rgba(37,99,235,.15);border:1px solid rgba(59,130,246,.2);
+        border-radius:50%;font-size:.7rem;font-weight:700;color:#3b82f6;flex-shrink:0;}
+    .step-arrow{color:#1e293b;font-size:.8rem;}
+    </style>""",
     unsafe_allow_html=True,
 )
 
-# ── Helper functions ──────────────────────────────────────────────────────────
 
-def rating_class(rating: float) -> str:
-    if rating >= 4.0:
-        return "rating-green"
-    if rating >= 3.0:
-        return "rating-yellow"
-    if rating > 0:
-        return "rating-red"
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def ensure_state() -> None:
+    for k, v in {"results": [], "last_school": None, "last_courses": [], "error": None, "school_map": {}}.items():
+        st.session_state.setdefault(k, v)
+
+
+def rc(r: float) -> str:
+    if r >= 4.0: return "rating-green"
+    if r >= 3.0: return "rating-yellow"
+    if r > 0:    return "rating-red"
     return "rating-gray"
 
 
-def render_card(card: ProfessorCard, idx: int) -> None:
-    rc = rating_class(card.rating)
-    rating_display = f"{card.rating:.1f}" if card.rating else "N/A"
-    difficulty_display = f"{card.difficulty:.1f}" if card.difficulty else "—"
-    wta_display = f"{card.would_take_again:.0f}%" if card.would_take_again is not None else "—"
-    num_display = str(card.num_ratings)
-
-    courses_html = "".join(f'<span class="course-tag">{c}</span>' for c in card.courses[:8])
-    courses_html = courses_html or '<span style="color:#718096;font-size:0.8rem">No courses listed</span>'
-
-    snippets_html = ""
-    for s in card.snippets:
-        course_label = f"· {s.course}" if s.course else ""
-        snippets_html += f"""
-        <div class="snippet">
-            <div class="snippet-meta">{s.date} {course_label}</div>
-            {s.comment}
-        </div>"""
-    if not snippets_html:
-        snippets_html = '<div style="color:#718096;font-size:0.8rem">No recent reviews available.</div>'
-
-    html = f"""
-    <div class="prof-card">
-        <div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap">
-            <div style="flex:0 0 auto">
-                <div class="rating-badge {rc}">{rating_display}</div>
-                <div style="text-align:center;font-size:0.7rem;color:#718096;margin-top:4px">/ 5.0</div>
-            </div>
-            <div style="flex:1;min-width:200px">
-                <div class="prof-name">#{idx + 1} {card.name}</div>
-                <div class="prof-dept">{card.department or "Department not listed"}</div>
-                <div>
-                    <span class="stat-pill">Difficulty <span>{difficulty_display}</span>/5</span>
-                    <span class="stat-pill">Would Take Again <span>{wta_display}</span></span>
-                    <span class="stat-pill">Ratings <span>{num_display}</span></span>
-                </div>
-            </div>
-        </div>
-        <div style="margin-top:16px">
-            <div class="section-label">Courses</div>
-            {courses_html}
-        </div>
-        <div style="margin-top:16px">
-            <div class="section-label">Recent Reviews</div>
-            {snippets_html}
-        </div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+def parse_courses(raw: str) -> list[str]:
+    return [c.strip() for c in raw.split(",") if c.strip()]
 
 
-def sort_cards(cards: list[ProfessorCard], sort_by: str) -> list[ProfessorCard]:
-    if sort_by == "Rating (highest first)":
-        return sorted(cards, key=lambda c: c.rating, reverse=True)
-    if sort_by == "Difficulty (easiest first)":
-        return sorted(cards, key=lambda c: c.difficulty)
-    if sort_by == "Would Take Again (highest first)":
-        return sorted(cards, key=lambda c: c.would_take_again if c.would_take_again is not None else -1, reverse=True)
-    if sort_by == "Number of Ratings (most first)":
-        return sorted(cards, key=lambda c: c.num_ratings, reverse=True)
+def _e(t: str) -> str:
+    return t.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+
+# ── School searchbox ──────────────────────────────────────────────────────────
+
+def _school_search_fn(query: str) -> list[str]:
+    if not query or len(query) < 2:
+        return []
+    schools, _ = search_school_options(query)
+    if "school_map" not in st.session_state:
+        st.session_state.school_map = {}
+    for s in schools:
+        st.session_state.school_map[s.name] = s
+    return [s.name for s in schools]
+
+
+# ── Review summary ────────────────────────────────────────────────────────────
+
+_POS = {"great":"great teacher","amazing":"amazing","excellent":"excellent",
+        "helpful":"very helpful","clear":"explains clearly","best":"one of the best",
+        "easy":"easy to follow","love":"loved by students","engaging":"engaging",
+        "fair":"fair grader","organized":"well organized","passionate":"passionate",
+        "approachable":"approachable","recommend":"highly recommended",
+        "interesting":"interesting","knowledgeable":"knowledgeable","caring":"caring"}
+_NEG = {"hard":"tough exams","difficult":"difficult coursework","boring":"dry lectures",
+        "confusing":"can be confusing","unfair":"grading can feel unfair",
+        "strict":"strict grader","avoid":"students advise caution",
+        "disorganized":"disorganized","rude":"can be dismissive"}
+
+def _summary(card: ProfessorCard) -> str:
+    if not card.snippets:
+        return ""
+    txt = " ".join(s.comment for s in card.snippets).lower()
+    pos = [ph for kw, ph in _POS.items() if kw in txt]
+    neg = [ph for kw, ph in _NEG.items() if kw in txt]
+    parts: list[str] = []
+    if pos: parts.append(", ".join(pos[:2]))
+    if neg: parts.append(neg[0])
+    if parts:
+        wta = card.would_take_again
+        tail = f" · {wta:.0f}% would retake" if wta is not None else ""
+        return ". ".join(parts) + "." + tail
+    t = card.snippets[0].comment
+    return (t[:115] + "…") if len(t) > 115 else t
+
+
+# ── Podium ────────────────────────────────────────────────────────────────────
+
+def render_podium(cards: list[ProfessorCard]) -> None:
+    if not cards:
+        return
+    top = cards[:3]
+
+    def _col(card: ProfessorCard, rank: int, delay: float) -> str:
+        score = f"{card.rating:.1f}" if card.rating else "N/A"
+        medal = {1:"🥇",2:"🥈",3:"🥉"}[rank]
+        q = _summary(card)
+        q_html = f'<div class="p-quote">{_e(q[:120] + ("…" if len(q)>120 else ""))}</div>' if q else '<div class="p-quote"></div>'
+        return (
+            f'<div class="podium-col" style="animation-delay:{delay}s">'
+            f'<div class="p-avatar">👨\u200d🏫</div>'
+            f'<div class="p-medal">{medal}</div>'
+            f'<div class="p-name">{_e(card.name)}</div>'
+            f'<div class="p-dept">{_e(card.department or "")}</div>'
+            f'<div class="p-score {rc(card.rating)}">{score}</div>'
+            f'<div class="p-block p-block-{rank}"><div class="p-rank-lbl p-rank-lbl-{rank}">#{rank}</div></div>'
+            f'{q_html}'
+            f'</div>'
+        )
+
+    # Visual: 2nd|1st|3rd   animate: 3rd(0s)→2nd(.35s)→1st(.72s)
+    col2 = _col(top[1], 2, 0.35) if len(top) >= 2 else '<div class="podium-col"></div>'
+    col1 = _col(top[0], 1, 0.72)
+    col3 = _col(top[2], 3, 0.00) if len(top) >= 3 else '<div class="podium-col"></div>'
+
+    st.markdown(
+        '<div class="podium-section">'
+        '<div class="podium-hdr">Top Professors</div>'
+        f'<div class="podium-stage">{col2}{col1}{col3}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ── Sort ──────────────────────────────────────────────────────────────────────
+
+def sort_cards(cards: list[ProfessorCard], by: str) -> list[ProfessorCard]:
+    if by == "Rating ↓":       return sorted(cards, key=lambda c:(c.rating,c.num_ratings), reverse=True)
+    if by == "Easiest first":  return sorted(cards, key=lambda c:(c.difficulty or 99,-c.rating))
+    if by == "Would Take Again ↓": return sorted(cards, key=lambda c:(c.would_take_again if c.would_take_again is not None else -1,c.rating), reverse=True)
+    if by == "Most Ratings":   return sorted(cards, key=lambda c:(c.num_ratings,c.rating), reverse=True)
     return cards
 
 
-# ── App header ────────────────────────────────────────────────────────────────
+# ── Card ──────────────────────────────────────────────────────────────────────
+
+def render_card(card: ProfessorCard, index: int) -> None:
+    score = f"{card.rating:.1f}" if card.rating else "N/A"
+    diff  = f"{card.difficulty:.1f}" if card.difficulty else "—"
+    wta   = f"{card.would_take_again:.0f}%" if card.would_take_again is not None else "—"
+
+    courses = "".join(f'<span class="course-tag">{_e(c)}</span>' for c in card.courses[:12]) or '<span style="color:#1e293b;font-size:.76rem">None listed</span>'
+
+    sm = _summary(card)
+    sm_html = f'<div class="card-summary">{_e(sm)}</div>' if sm else ""
+
+    top = card.snippets[0] if card.snippets else None
+    if top:
+        cb = f" · {_e(top.course)}" if top.course else ""
+        snips = f'<div class="snippet"><div class="snippet-meta">{_e(top.date)}{cb}</div>{_e(top.comment)}</div>'
+    else:
+        snips = '<div style="color:#1e293b;font-size:.78rem;margin-top:.3rem">No review loaded yet.</div>'
+
+    # Build HTML as a joined list — NO blank lines, NO leading whitespace.
+    # A blank line inside st.markdown HTML terminates the HTML block in CommonMark,
+    # causing subsequent indented content to be rendered as a code block.
+    html = "".join([
+        '<div class="prof-card">',
+        '<div style="display:flex;gap:14px;align-items:flex-start">',
+        '<div style="flex-shrink:0;text-align:center">',
+        f'<div class="card-rating {rc(card.rating)}">{score}</div>',
+        '<div class="card-out-of">/ 5.0</div>',
+        '</div>',
+        '<div style="flex:1;min-width:0">',
+        f'<div class="card-name"><span class="rank-chip">#{index+1}</span>{_e(card.name)}</div>',
+        f'<div class="card-dept">{_e(card.department or "Department not listed")}</div>',
+        sm_html,
+        '<div class="stat-row">',
+        f'<span class="stat-chip">Difficulty <strong>{diff}</strong>/5</span>',
+        f'<span class="stat-chip">Would Take Again <strong>{wta}</strong></span>',
+        f'<span class="stat-chip">Ratings <strong>{card.num_ratings}</strong></span>',
+        '</div>',
+        '<div class="section-lbl">Courses</div>',
+        f'<div class="course-wrap">{courses}</div>',
+        '<div class="section-lbl">Reviews</div>',
+        snips,
+        '</div>',
+        '</div>',
+        '</div>',
+    ])
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# App
+# ─────────────────────────────────────────────────────────────────────────────
+
+ensure_state()
+results: list[ProfessorCard] = st.session_state.results
+
+# Podium is the first thing you see when results exist
+if results:
+    render_podium(sort_cards(results, "Rating ↓"))
+
+# Hero
 st.markdown(
-    """
-    <div style="text-align:center;padding:32px 0 8px">
-        <div style="font-size:2.6rem;font-weight:800;color:#e2e8f0;letter-spacing:-0.5px">
-            🎓 ProfPick
-        </div>
-        <div style="color:#718096;font-size:1rem;margin-top:4px">
-            Find the best professor for your course
-        </div>
-    </div>
-    """,
+    '<div class="hero">'
+    '<div class="hero-title">ProfPick</div>'
+    '<div class="hero-sub">Search your campus · filter by course · rank professors instantly</div>'
+    '</div>',
     unsafe_allow_html=True,
 )
 
-# ── Search bar ────────────────────────────────────────────────────────────────
-st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-col_school, col_courses, col_btn = st.columns([3, 3, 1], gap="small")
+# Search panel
+col_school, col_courses = st.columns([1, 1], gap="medium")
 
 with col_school:
-    school_input = st.text_input(
-        "University / College",
-        placeholder="e.g. University of California Los Angeles",
-        key="school_input",
+    selected_name: str | None = st_searchbox(
+        _school_search_fn,
+        key="school_searchbox",
+        placeholder="UCLA, MIT, Ohio State…",
+        label="School",
+        clear_on_submit=False,
+        debounce=200,
+        style_overrides={
+            "wrapper": {"outline": "none"},
+            "searchbox": {
+                "control": {
+                    "backgroundColor": "#0d1117",
+                    "border": "1px solid #1e293b",
+                    "borderRadius": "10px",
+                    "boxShadow": "none",
+                    "outline": "none",
+                },
+                "menuList": {
+                    "backgroundColor": "#0d1117",
+                    "border": "1px solid #1e293b",
+                    "borderRadius": "8px",
+                    "padding": "4px",
+                },
+                "input": {"color": "#e2e8f0"},
+                "singleValue": {"color": "#e2e8f0"},
+                "placeholder": {"color": "#475569"},
+                "option": {
+                    "color": "#cbd5e1",
+                    "backgroundColor": "#0d1117",
+                    "highlightColor": "#1e293b",
+                },
+            },
+        },
     )
+    school_map: dict[str, SchoolOption] = st.session_state.get("school_map", {})
+    selected_school_obj: SchoolOption | None = school_map.get(selected_name) if selected_name else None
 
 with col_courses:
-    courses_input = st.text_input(
-        "Course codes (optional, comma-separated)",
-        placeholder="e.g. CSCI 101, MATH 141",
-        key="courses_input",
+    course_input = st.text_input(
+        "Course codes (optional)",
+        placeholder="CSCI 101, MATH 141",
+        key="course_input",
     )
 
+col_btn, col_hint = st.columns([1, 3], gap="medium")
 with col_btn:
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    search_clicked = st.button("Search", use_container_width=True)
+    load_clicked = st.button("Load Professors", use_container_width=True)
+with col_hint:
+    if selected_school_obj:
+        msg = f"✓ {selected_school_obj.name}"
+        color = "#475569"
+    elif selected_name:
+        msg = "School not found — try searching again"
+        color = "#ef4444"
+    else:
+        msg = "Type a school name above to search"
+        color = "#334155"
+    st.markdown(f'<div style="padding-top:.68rem;font-size:.82rem;color:{color}">{_e(msg)}</div>', unsafe_allow_html=True)
 
-# Sort + filter row (only shown when results exist)
-sort_by = "Rating (highest first)"
-if "last_cards" in st.session_state and st.session_state.last_cards:
-    col_sort, col_spacer = st.columns([2, 4], gap="small")
+if load_clicked:
+    if not selected_school_obj:
+        st.session_state.error = "Search for a school and select it before loading professors."
+        st.session_state.results = []
+    else:
+        course_filters = parse_courses(course_input)
+        with st.spinner(f"Loading professors at {selected_school_obj.name}…"):
+            cards, err = get_professor_cards(
+                school_id=selected_school_obj.id,
+                school_name=selected_school_obj.name,
+                course_filters=course_filters,
+                snippet_batch_size=DEFAULT_SNIPPET_BATCH,
+            )
+        st.session_state.results      = cards
+        st.session_state.last_school  = selected_school_obj
+        st.session_state.last_courses = course_filters
+        st.session_state.error        = err
+
+# Error
+if st.session_state.error:
+    st.error(st.session_state.error)
+
+# Results
+if results:
+    last_school: SchoolOption = st.session_state.last_school
+    last_courses: list[str]   = st.session_state.last_courses
+    course_label = ", ".join(last_courses) if last_courses else "All courses"
+
+    col_meta, col_sort = st.columns([3, 1], gap="medium")
+    with col_meta:
+        st.markdown(
+            '<div class="results-bar">'
+            f'<strong>{len(results)}</strong> professors at '
+            f'<span class="rschool">{_e(last_school.name)}</span>'
+            f' · <span style="color:#334155">{_e(course_label)}</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     with col_sort:
         sort_by = st.selectbox(
             "Sort by",
-            ["Rating (highest first)", "Difficulty (easiest first)",
-             "Would Take Again (highest first)", "Number of Ratings (most first)"],
+            ["Rating ↓", "Easiest first", "Would Take Again ↓", "Most Ratings"],
+            index=0,
             key="sort_select",
         )
 
-st.markdown("<hr style='border-color:#2d3748;margin:16px 0'>", unsafe_allow_html=True)
+    sorted_cards = sort_cards(results, sort_by)
 
-# ── Search logic ──────────────────────────────────────────────────────────────
-if search_clicked:
-    if not school_input.strip():
-        st.warning("Please enter a school name.")
-    else:
-        course_list = [c.strip() for c in courses_input.split(",") if c.strip()]
-
-        with st.spinner("Fetching professors from Rate My Professor… this may take a moment."):
-            cards, error = get_professor_cards(
-                school_name=school_input.strip(),
-                course_filters=course_list,
-                fetch_snippets=True,
+    missing = sum(1 for c in sorted_cards if not c.snippets)
+    if missing:
+        col_more, col_note = st.columns([1, 3], gap="medium")
+        with col_more:
+            load_more = st.button("Load More Reviews", use_container_width=True)
+        with col_note:
+            st.markdown(
+                f'<div style="padding-top:.65rem;font-size:.78rem;color:#334155">'
+                f'{missing} professor{"s" if missing!=1 else ""} still need reviews loaded.</div>',
+                unsafe_allow_html=True,
             )
-
-        if error:
-            st.error(error)
-            st.session_state.last_cards = []
-            st.session_state.last_school = ""
-            st.session_state.last_courses = []
-        else:
-            st.session_state.last_cards = cards
-            st.session_state.last_school = school_input.strip()
-            st.session_state.last_courses = course_list
+        if load_more:
+            with st.spinner("Loading reviews…"):
+                hydrate_snippets(sorted_cards, last_courses, limit=DEFAULT_SNIPPET_BATCH)
             st.rerun()
-
-# ── Results display ───────────────────────────────────────────────────────────
-if "last_cards" in st.session_state and st.session_state.last_cards:
-    cards = st.session_state.last_cards
-    sorted_cards = sort_cards(cards, sort_by)
-
-    school_label = st.session_state.get("last_school", "")
-    course_label = (
-        " · ".join(st.session_state.get("last_courses", []))
-        if st.session_state.get("last_courses")
-        else "All Courses"
-    )
-
-    st.markdown(
-        f"""<div style="color:#a0aec0;font-size:0.9rem;margin-bottom:16px">
-            <b style="color:#e2e8f0">{len(cards)}</b> professor{'s' if len(cards) != 1 else ''}
-            found at <b style="color:#e2e8f0">{school_label}</b>
-            &nbsp;·&nbsp; {course_label}
-        </div>""",
-        unsafe_allow_html=True,
-    )
 
     for i, card in enumerate(sorted_cards):
         render_card(card, i)
 
-elif "last_cards" in st.session_state and st.session_state.last_cards == []:
-    pass  # Error already shown above
 else:
     st.markdown(
-        """<div class="no-results">
-            Enter your school name above and click <b>Search</b> to get started.<br>
-            <span style="font-size:0.85rem">Optionally add course codes to filter professors who teach those classes.</span>
-        </div>""",
+        '<div class="empty-wrap">'
+        '<div class="empty-title">No results yet</div>'
+        '<div class="empty-steps">'
+        '<div class="step-pill"><div class="step-num">1</div>Type school name</div>'
+        '<div class="step-arrow">→</div>'
+        '<div class="step-pill"><div class="step-num">2</div>Click a result</div>'
+        '<div class="step-arrow">→</div>'
+        '<div class="step-pill"><div class="step-num">3</div>Add course codes</div>'
+        '<div class="step-arrow">→</div>'
+        '<div class="step-pill"><div class="step-num">4</div>Load Professors</div>'
+        '</div>'
+        '</div>',
         unsafe_allow_html=True,
     )

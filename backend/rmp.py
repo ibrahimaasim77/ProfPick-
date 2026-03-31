@@ -45,30 +45,48 @@ _RATINGS_QUERY = (
     "}}}}}}"
 )
 
-
 def _encode_teacher_id(prof_id: int) -> str:
     return base64.b64encode(f"Teacher-{prof_id}".encode()).decode()
 
 
-# ── School search ─────────────────────────────────────────────────────────────
+# ── School search (GraphQL) ───────────────────────────────────────────────────
+
+_SCHOOL_SEARCH_QUERY = (
+    "query SchoolSearch($q: SchoolSearchQuery!) {"
+    "  newSearch { schools(query: $q) { edges { node { legacyId name city state } } } }"
+    "}"
+)
+
 
 async def search_schools(query: str) -> list[dict]:
-    """Return list of {id, name} dicts matching query."""
-    url = f"{BASE_URL}/search/schools?q={query}"
+    """Return list of {id, name} dicts matching query via GraphQL."""
     async with httpx.AsyncClient(headers=_HEADERS, timeout=10) as client:
-        resp = await client.get(url)
+        resp = await client.post(
+            GRAPHQL_URL,
+            json={"query": _SCHOOL_SEARCH_QUERY, "variables": {"q": {"text": query}}},
+        )
         resp.raise_for_status()
+        edges = (
+            resp.json()
+            .get("data", {})
+            .get("newSearch", {})
+            .get("schools", {})
+            .get("edges", [])
+        )
 
-    # Extract pairs: "legacyId":1234,"name":"Fullerton College"
-    pairs = re.findall(r'"legacyId":(\d+),"name":"([^"]+)"', resp.text)
     seen: set[int] = set()
     results = []
-    for raw_id, name in pairs:
-        sid = int(raw_id)
-        if sid not in seen:
-            seen.add(sid)
-            results.append({"id": sid, "name": name})
-    return results[:20]
+    for edge in edges:
+        node = edge.get("node", {})
+        lid = int(node["legacyId"])
+        if lid in seen:
+            continue
+        seen.add(lid)
+        city = node.get("city") or ""
+        state = node.get("state") or ""
+        loc = f" — {city}, {state}" if city else ""
+        results.append({"id": lid, "name": f"{node['name']}{loc}"})
+    return results
 
 
 # ── Professor ID sweep ────────────────────────────────────────────────────────
