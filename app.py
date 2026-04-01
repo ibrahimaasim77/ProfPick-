@@ -47,8 +47,16 @@ st.markdown(
         border:1px solid #1e293b!important;border-radius:10px!important;font-size:.9rem!important;
         transition:border-color .15s,box-shadow .15s;}
     .stTextInput>div>div>input:focus{border-color:#2563eb!important;box-shadow:0 0 0 3px rgba(37,99,235,.14)!important;}
-    .stTextInput label,.stSelectbox label{color:#64748b!important;font-size:.75rem!important;
+    .stTextInput label,.stSelectbox label,.stMultiSelect label{color:#64748b!important;font-size:.75rem!important;
         font-weight:600!important;letter-spacing:.07em!important;text-transform:uppercase!important;}
+    .stMultiSelect [data-baseweb="select"]>div{background:#0d1117!important;border:1px solid #1e293b!important;
+        border-radius:10px!important;min-height:42px!important;}
+    .stMultiSelect [data-baseweb="select"]>div:focus-within{border-color:#2563eb!important;
+        box-shadow:0 0 0 3px rgba(37,99,235,.14)!important;}
+    .stMultiSelect [data-baseweb="tag"]{background:rgba(37,99,235,.18)!important;
+        border:1px solid rgba(59,130,246,.35)!important;border-radius:6px!important;color:#93c5fd!important;}
+    .stMultiSelect [data-baseweb="menu"]{background:#0d1117!important;border:1px solid #1e293b!important;border-radius:8px!important;}
+    .stMultiSelect input{color:#e2e8f0!important;}
 
     /* searchbox component container */
     [data-testid="stCustomComponentV1"]{border-radius:10px;overflow:visible;}
@@ -437,11 +445,23 @@ with col_school:
     selected_school_obj: SchoolOption | None = school_map.get(selected_name) if selected_name else None
 
 with col_courses:
-    course_input = st.text_input(
-        "Course codes (optional)",
-        placeholder="CSCI 101, MATH 141",
-        key="course_input",
-    )
+    _available = st.session_state.get("available_courses", [])
+    if _available:
+        _selected_courses: list[str] = st.multiselect(
+            "Course codes (optional)",
+            options=_available,
+            placeholder="Type to search — CSCI 101, MATH 141…",
+            key="course_multiselect",
+        )
+        _course_input_raw = ""
+    else:
+        _selected_courses = []
+        _course_input_raw = st.text_input(
+            "Course codes (optional)",
+            placeholder="CSCI 101, MATH 141",
+            key="course_input",
+            help="Load professors first to get course suggestions",
+        )
 
 col_btn, col_hint = st.columns([1, 3], gap="medium")
 with col_btn:
@@ -463,7 +483,7 @@ if load_clicked:
         st.session_state.error = "Search for a school and select it before loading professors."
         st.session_state.results = []
     else:
-        course_filters = parse_courses(course_input)
+        course_filters = _selected_courses if _selected_courses else parse_courses(_course_input_raw)
         with st.spinner(f"Loading professors at {selected_school_obj.name}…"):
             cards, err = get_professor_cards(
                 school_id=selected_school_obj.id,
@@ -475,6 +495,11 @@ if load_clicked:
         st.session_state.last_school  = selected_school_obj
         st.session_state.last_courses = course_filters
         st.session_state.error        = err
+        # Collect all unique course codes from loaded professors for autocomplete
+        if cards:
+            st.session_state.available_courses = sorted(
+                {c for card in cards for c in card.courses if c}
+            )
 
 # Error
 if st.session_state.error:
