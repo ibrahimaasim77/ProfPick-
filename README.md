@@ -2,9 +2,12 @@
 
 Search, filter, and rank professors at any US university — powered by live RateMyProfessors data.
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-profpick.streamlit.app-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://profpick.streamlit.app)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.32+-red?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+**[→ Try it live at profpick.streamlit.app](https://profpick.streamlit.app)**
 
 ---
 
@@ -46,13 +49,15 @@ ProfPick lets you find the best professor for a specific course at your school �
 ## Setup
 
 ```bash
-git clone https://github.com/ibrahimaasim77/ProfPick.git
-cd ProfPick
+git clone https://github.com/ibrahimaasim77/ProfPick-.git
+cd ProfPick-
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 Requires Python 3.11+. No API keys or accounts needed.
+
+Or just use the hosted version: **[profpick.streamlit.app](https://profpick.streamlit.app)**
 
 ---
 
