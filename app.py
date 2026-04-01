@@ -310,7 +310,11 @@ def _is_active_course(c: str, filters: list[str]) -> bool:
     return False
 
 
-def render_card(card: ProfessorCard, index: int, course_filters: list[str] | None = None) -> None:
+def render_card(
+    card: ProfessorCard,
+    index: int,
+    course_filters: list[str] | None = None,
+) -> None:
     score = f"{card.rating:.1f}" if card.rating else "N/A"
     diff  = f"{card.difficulty:.1f}" if card.difficulty else "—"
     wta   = f"{card.would_take_again:.0f}%" if card.would_take_again is not None else "—"
@@ -331,31 +335,26 @@ def render_card(card: ProfessorCard, index: int, course_filters: list[str] | Non
     else:
         snips = '<div style="color:#1e293b;font-size:.78rem;margin-top:.3rem">No review loaded yet.</div>'
 
-    # Recency badge
+    # Recency badge — green if active within 18 months, gray with date otherwise
     if card.last_course_review_date:
-        badge_color = "#34d399" if card.active_for_course else "#f87171"
-        recency_chip = (
-            f'<span class="stat-chip" style="border-color:{badge_color}40;color:{badge_color}">'
-            f'Last reviewed {_e(card.last_course_review_date)}</span>'
-        )
+        if card.recently_active:
+            recency_chip = (
+                f'<span class="stat-chip" style="border-color:#34d39940;color:#34d399">'
+                f'Last reviewed {_e(card.last_course_review_date)}</span>'
+            )
+        else:
+            recency_chip = (
+                f'<span class="stat-chip" style="border-color:#47556940;color:#475569">'
+                f'Last reviewed {_e(card.last_course_review_date)}</span>'
+            )
     else:
         recency_chip = ""
-
-    # Stale warning banner
-    stale_banner = ""
-    if active_filters and not card.active_for_course and card.last_course_review_date is not None:
-        stale_banner = (
-            '<div style="font-size:.72rem;color:#f87171;background:rgba(239,68,68,.07);'
-            'border:1px solid rgba(239,68,68,.15);border-radius:6px;padding:.28rem .6rem;'
-            'margin-bottom:.5rem">No reviews for this course in the last 2 years</div>'
-        )
 
     # Build HTML as a joined list — NO blank lines, NO leading whitespace.
     # A blank line inside st.markdown HTML terminates the HTML block in CommonMark,
     # causing subsequent indented content to be rendered as a code block.
     html = "".join([
         '<div class="prof-card">',
-        stale_banner,
         '<div style="display:flex;gap:14px;align-items:flex-start">',
         '<div style="flex-shrink:0;text-align:center">',
         f'<div class="card-rating {rc(card.rating)}">{score}</div>',
@@ -445,23 +444,31 @@ with col_school:
     selected_school_obj: SchoolOption | None = school_map.get(selected_name) if selected_name else None
 
 with col_courses:
-    _available = st.session_state.get("available_courses", [])
-    if _available:
-        _selected_courses: list[str] = st.multiselect(
+    _available_courses: list[str] = st.session_state.get("available_courses", [])
+    if _available_courses:
+        _multi_selected: list[str] = st.multiselect(
             "Course codes (optional)",
-            options=_available,
-            placeholder="Type to search — CSCI 101, MATH 141…",
+            options=_available_courses,
+            placeholder="Pick a course…",
             key="course_multiselect",
         )
-        _course_input_raw = ""
+        _course_input_raw = st.text_input(
+            "Or type additional codes",
+            placeholder="CSCI 101, MATH 141",
+            key="course_text_input",
+            label_visibility="collapsed",
+        )
     else:
-        _selected_courses = []
+        _multi_selected = []
         _course_input_raw = st.text_input(
             "Course codes (optional)",
             placeholder="CSCI 101, MATH 141",
-            key="course_input",
-            help="Load professors first to get course suggestions",
+            key="course_text_input",
         )
+
+# Compute current course filters once (used by both manual load and auto-reload)
+_typed_courses = parse_courses(_course_input_raw)
+_current_courses = list(dict.fromkeys(_multi_selected + _typed_courses))
 
 col_btn, col_hint = st.columns([1, 3], gap="medium")
 with col_btn:
@@ -483,23 +490,42 @@ if load_clicked:
         st.session_state.error = "Search for a school and select it before loading professors."
         st.session_state.results = []
     else:
-        course_filters = _selected_courses if _selected_courses else parse_courses(_course_input_raw)
         with st.spinner(f"Loading professors at {selected_school_obj.name}…"):
             cards, err = get_professor_cards(
                 school_id=selected_school_obj.id,
                 school_name=selected_school_obj.name,
-                course_filters=course_filters,
+                course_filters=_current_courses,
                 snippet_batch_size=DEFAULT_SNIPPET_BATCH,
             )
         st.session_state.results      = cards
         st.session_state.last_school  = selected_school_obj
-        st.session_state.last_courses = course_filters
+        st.session_state.last_courses = _current_courses
         st.session_state.error        = err
-        # Collect all unique course codes from loaded professors for autocomplete
+        # Collect all unique course codes for the multiselect (only on manual load)
         if cards:
             st.session_state.available_courses = sorted(
                 {c for card in cards for c in card.courses if c}
             )
+
+# Auto-reload when course filter changes (results already loaded, no manual click needed)
+_reload_school: SchoolOption | None = st.session_state.get("last_school")
+if (
+    not load_clicked
+    and _reload_school is not None
+    and st.session_state.get("results")
+    and sorted(_current_courses) != sorted(st.session_state.get("last_courses", []))
+):
+    with st.spinner("Updating professor list…"):
+        _ac, _ae = get_professor_cards(
+            school_id=_reload_school.id,
+            school_name=_reload_school.name,
+            course_filters=_current_courses,
+            snippet_batch_size=DEFAULT_SNIPPET_BATCH,
+        )
+    st.session_state.results      = _ac
+    st.session_state.last_courses = _current_courses
+    st.session_state.error        = _ae
+    st.rerun()
 
 # Error
 if st.session_state.error:
@@ -517,7 +543,7 @@ if results:
             '<div class="results-bar">'
             f'<strong>{len(results)}</strong> professors at '
             f'<span class="rschool">{_e(last_school.name)}</span>'
-            f' · <span style="color:#334155">{_e(course_label)}</span>'
+            f' · <span style="color:#475569">{_e(course_label)}</span>'
             '</div>',
             unsafe_allow_html=True,
         )
