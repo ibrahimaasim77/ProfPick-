@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from backend import cache
 from backend import rmp
 
 DEFAULT_SNIPPET_BATCH = 12
+RECENCY_BATCH = 40  # top-N professors to eagerly check for recency when course filter is active
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class ProfessorCard:
     num_ratings: int
     courses: list[str]
     snippets: list[ReviewSnippet] = field(default_factory=list)
+    last_course_review_date: Optional[str] = None  # e.g. "Jan 2024"
+    active_for_course: bool = True                 # False = no reviews for this course in last 24 months
 
 
 def _run(coro):
@@ -57,13 +61,77 @@ def _course_key(course_filters: list[str]) -> str:
 def _matches_courses(professor: dict, course_filters: list[str]) -> bool:
     if not course_filters:
         return True
-    professor_courses = {_normalize_course(course) for course in professor.get("courses", [])}
-    for course_filter in course_filters:
-        cf_norm = _normalize_course(course_filter)
-        for professor_course in professor_courses:
-            if cf_norm in professor_course or professor_course in cf_norm:
+    professor_courses = {_normalize_course(c) for c in professor.get("courses", [])}
+    for cf in course_filters:
+        cf_norm = _normalize_course(cf)
+        for pc in professor_courses:
+            if pc == cf_norm:
+                return True  # exact match
+            # prefix match: "CSCI" matches "CSCI101" — next char after prefix must be a digit
+            if pc.startswith(cf_norm) and len(pc) > len(cf_norm) and pc[len(cf_norm)].isdigit():
                 return True
     return False
+
+
+_SNIPPET_DATE_FORMATS = ["%b %Y", "%B %Y"]
+
+
+def _parse_snippet_date(date_str: str) -> Optional[datetime]:
+    for fmt in _SNIPPET_DATE_FORMATS:
+        try:
+            return datetime.strptime(date_str.strip(), fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _is_recent(date_str: str, months: int = 24) -> bool:
+    dt = _parse_snippet_date(date_str)
+    if dt is None:
+        return False
+    return dt >= datetime.now(timezone.utc) - timedelta(days=months * 30)
+
+
+def _compute_recency(card: "ProfessorCard", course_filters: list[str]) -> None:
+    """Set last_course_review_date and active_for_course based on loaded snippets."""
+    if not card.snippets:
+        return  # no data — don't penalize, keep defaults
+
+    if not course_filters:
+        # No filter: just record the most recent snippet date overall
+        dated = [s for s in card.snippets if s.date]
+        if dated:
+            best = max(dated, key=lambda s: _parse_snippet_date(s.date) or datetime.min.replace(tzinfo=timezone.utc))
+            card.last_course_review_date = best.date
+        return  # active_for_course stays True
+
+    normed = [_normalize_course(cf) for cf in course_filters]
+
+    def _snippet_matches_filter(s_course: str) -> bool:
+        sn = _normalize_course(s_course)
+        for cf_norm in normed:
+            if sn == cf_norm:
+                return True
+            if sn.startswith(cf_norm) and len(sn) > len(cf_norm) and sn[len(cf_norm)].isdigit():
+                return True
+        return False
+
+    relevant = [s for s in card.snippets if s.course and _snippet_matches_filter(s.course)]
+
+    if not relevant:
+        card.last_course_review_date = None
+        # Only mark stale if we fetched enough snippets to be confident
+        card.active_for_course = len(card.snippets) < 5
+        return
+
+    dated = [s for s in relevant if s.date]
+    if dated:
+        best = max(dated, key=lambda s: _parse_snippet_date(s.date) or datetime.min.replace(tzinfo=timezone.utc))
+        card.last_course_review_date = best.date
+        card.active_for_course = _is_recent(best.date, months=24)
+    else:
+        card.last_course_review_date = None
+        card.active_for_course = False
 
 
 def _to_snippets(raw_snippets: list[dict]) -> list[ReviewSnippet]:
@@ -93,9 +161,11 @@ def _to_card(professor: dict) -> ProfessorCard:
     )
 
 
-async def _fetch_snippet_batch(cards: list[ProfessorCard], course_filters: list[str]) -> list[list[dict]]:
+async def _fetch_snippet_batch(
+    cards: list[ProfessorCard], course_filters: list[str], max_snippets: int = 3
+) -> list[list[dict]]:
     selected_course = course_filters[0] if len(course_filters) == 1 else ""
-    tasks = [rmp.fetch_snippets(card.id, selected_course) for card in cards]
+    tasks = [rmp.fetch_snippets(card.id, selected_course, max_snippets=max_snippets) for card in cards]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     snippet_payloads: list[list[dict]] = []
@@ -182,16 +252,45 @@ def get_professor_cards(
     if not cards:
         return [], f"No professors found for '{school_name}'."
 
+    course_key = _course_key(course_filters)
+
+    # ── Recency pass (only when a course filter is active) ────────────────────
+    if course_filters:
+        recency_key = course_key + "_rec"
+        recency_targets = cards[:RECENCY_BATCH]
+        to_fetch_recency: list[ProfessorCard] = []
+        for card in recency_targets:
+            cached = cache.get_snippets(card.id, recency_key)
+            if cached is not None:
+                card.snippets = _to_snippets(cached)
+                _compute_recency(card, course_filters)
+            else:
+                to_fetch_recency.append(card)
+        if to_fetch_recency:
+            payloads = _run(_fetch_snippet_batch(to_fetch_recency, course_filters, max_snippets=20))
+            for card, raw in zip(to_fetch_recency, payloads):
+                cache.set_snippets(card.id, recency_key, raw)
+                card.snippets = _to_snippets(raw)
+                _compute_recency(card, course_filters)
+        # Re-sort: active professors first, then stale, both groups by rating
+        active = sorted([c for c in recency_targets if c.active_for_course],
+                        key=lambda c: (c.rating, c.num_ratings), reverse=True)
+        stale  = sorted([c for c in recency_targets if not c.active_for_course],
+                        key=lambda c: (c.rating, c.num_ratings), reverse=True)
+        cards = active + stale + cards[RECENCY_BATCH:]
+
+    # ── Display snippet pass (first batch_size cards) ─────────────────────────
     batch_size = max(0, min(snippet_batch_size, len(cards)))
     if batch_size == 0:
         return cards, None
 
-    course_key = _course_key(course_filters)
     cards_to_fetch: list[ProfessorCard] = []
     for card in cards[:batch_size]:
         cached_snippets = cache.get_snippets(card.id, course_key)
         if cached_snippets is not None:
             card.snippets = _to_snippets(cached_snippets)
+        elif card.snippets:
+            pass  # already populated by recency pass
         else:
             cards_to_fetch.append(card)
 
@@ -216,6 +315,8 @@ def hydrate_snippets(cards: list[ProfessorCard], course_filters: list[str], limi
         cached_snippets = cache.get_snippets(card.id, course_key)
         if cached_snippets is not None:
             card.snippets = _to_snippets(cached_snippets)
+            if card.last_course_review_date is None and course_filters:
+                _compute_recency(card, course_filters)
         else:
             cards_to_fetch.append(card)
 
@@ -224,5 +325,6 @@ def hydrate_snippets(cards: list[ProfessorCard], course_filters: list[str], limi
         for card, raw_snippets in zip(cards_to_fetch, snippet_payloads):
             cache.set_snippets(card.id, course_key, raw_snippets)
             card.snippets = _to_snippets(raw_snippets)
+            _compute_recency(card, course_filters)
 
     return cards

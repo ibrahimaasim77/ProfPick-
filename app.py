@@ -9,6 +9,7 @@ from rmp_data import (
     DEFAULT_SNIPPET_BATCH,
     ProfessorCard,
     SchoolOption,
+    _normalize_course,
     search_school_options,
     hydrate_snippets,
     get_professor_cards,
@@ -145,6 +146,14 @@ st.markdown(
         background:rgba(37,99,235,.15);border:1px solid rgba(59,130,246,.2);
         border-radius:50%;font-size:.7rem;font-weight:700;color:#3b82f6;flex-shrink:0;}
     .step-arrow{color:#1e293b;font-size:.8rem;}
+
+    .btn-secondary .stButton>button{background:transparent!important;border:1px solid #1e293b!important;
+        color:#64748b!important;font-weight:600!important;}
+    .btn-secondary .stButton>button:hover{border-color:#2563eb!important;color:#60a5fa!important;
+        background:rgba(37,99,235,.06)!important;}
+
+    .course-tag-active{background:rgba(37,99,235,.22)!important;color:#93c5fd!important;
+        border-color:rgba(59,130,246,.45)!important;font-weight:700!important;}
     </style>""",
     unsafe_allow_html=True,
 )
@@ -153,7 +162,10 @@ st.markdown(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def ensure_state() -> None:
-    for k, v in {"results": [], "last_school": None, "last_courses": [], "error": None, "school_map": {}}.items():
+    for k, v in {
+        "results": [], "last_school": None, "last_courses": [], "error": None,
+        "school_map": {}, "available_courses": [],
+    }.items():
         st.session_state.setdefault(k, v)
 
 
@@ -166,6 +178,19 @@ def rc(r: float) -> str:
 
 def parse_courses(raw: str) -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+_MONTH_NUM = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+              "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+
+def _date_sort_key(date_str: str | None) -> tuple[int, int]:
+    if not date_str:
+        return (0, 0)
+    parts = date_str.strip().split()
+    if len(parts) != 2:
+        return (0, 0)
+    return (int(parts[1]) if parts[1].isdigit() else 0,
+            _MONTH_NUM.get(parts[0].lower()[:3], 0))
 
 
 def _e(t: str) -> str:
@@ -260,17 +285,33 @@ def sort_cards(cards: list[ProfessorCard], by: str) -> list[ProfessorCard]:
     if by == "Easiest first":  return sorted(cards, key=lambda c:(c.difficulty or 99,-c.rating))
     if by == "Would Take Again ↓": return sorted(cards, key=lambda c:(c.would_take_again if c.would_take_again is not None else -1,c.rating), reverse=True)
     if by == "Most Ratings":   return sorted(cards, key=lambda c:(c.num_ratings,c.rating), reverse=True)
+    if by == "Most Recent":    return sorted(cards, key=lambda c:_date_sort_key(c.last_course_review_date), reverse=True)
     return cards
 
 
 # ── Card ──────────────────────────────────────────────────────────────────────
 
-def render_card(card: ProfessorCard, index: int) -> None:
+def _is_active_course(c: str, filters: list[str]) -> bool:
+    cn = _normalize_course(c)
+    for cf in filters:
+        cf_n = _normalize_course(cf)
+        if cn == cf_n:
+            return True
+        if cn.startswith(cf_n) and len(cn) > len(cf_n) and cn[len(cf_n)].isdigit():
+            return True
+    return False
+
+
+def render_card(card: ProfessorCard, index: int, course_filters: list[str] | None = None) -> None:
     score = f"{card.rating:.1f}" if card.rating else "N/A"
     diff  = f"{card.difficulty:.1f}" if card.difficulty else "—"
     wta   = f"{card.would_take_again:.0f}%" if card.would_take_again is not None else "—"
 
-    courses = "".join(f'<span class="course-tag">{_e(c)}</span>' for c in card.courses[:12]) or '<span style="color:#1e293b;font-size:.76rem">None listed</span>'
+    active_filters = course_filters or []
+    courses = "".join(
+        f'<span class="course-tag{" course-tag-active" if _is_active_course(c, active_filters) else ""}">{_e(c)}</span>'
+        for c in card.courses[:12]
+    ) or '<span style="color:#1e293b;font-size:.76rem">None listed</span>'
 
     sm = _summary(card)
     sm_html = f'<div class="card-summary">{_e(sm)}</div>' if sm else ""
@@ -282,11 +323,31 @@ def render_card(card: ProfessorCard, index: int) -> None:
     else:
         snips = '<div style="color:#1e293b;font-size:.78rem;margin-top:.3rem">No review loaded yet.</div>'
 
+    # Recency badge
+    if card.last_course_review_date:
+        badge_color = "#34d399" if card.active_for_course else "#f87171"
+        recency_chip = (
+            f'<span class="stat-chip" style="border-color:{badge_color}40;color:{badge_color}">'
+            f'Last reviewed {_e(card.last_course_review_date)}</span>'
+        )
+    else:
+        recency_chip = ""
+
+    # Stale warning banner
+    stale_banner = ""
+    if active_filters and not card.active_for_course and card.last_course_review_date is not None:
+        stale_banner = (
+            '<div style="font-size:.72rem;color:#f87171;background:rgba(239,68,68,.07);'
+            'border:1px solid rgba(239,68,68,.15);border-radius:6px;padding:.28rem .6rem;'
+            'margin-bottom:.5rem">No reviews for this course in the last 2 years</div>'
+        )
+
     # Build HTML as a joined list — NO blank lines, NO leading whitespace.
     # A blank line inside st.markdown HTML terminates the HTML block in CommonMark,
     # causing subsequent indented content to be rendered as a code block.
     html = "".join([
         '<div class="prof-card">',
+        stale_banner,
         '<div style="display:flex;gap:14px;align-items:flex-start">',
         '<div style="flex-shrink:0;text-align:center">',
         f'<div class="card-rating {rc(card.rating)}">{score}</div>',
@@ -300,6 +361,7 @@ def render_card(card: ProfessorCard, index: int) -> None:
         f'<span class="stat-chip">Difficulty <strong>{diff}</strong>/5</span>',
         f'<span class="stat-chip">Would Take Again <strong>{wta}</strong></span>',
         f'<span class="stat-chip">Ratings <strong>{card.num_ratings}</strong></span>',
+        recency_chip,
         '</div>',
         '<div class="section-lbl">Courses</div>',
         f'<div class="course-wrap">{courses}</div>',
@@ -321,7 +383,8 @@ results: list[ProfessorCard] = st.session_state.results
 
 # Podium is the first thing you see when results exist
 if results:
-    render_podium(sort_cards(results, "Rating ↓"))
+    _current_sort = st.session_state.get("sort_select", "Rating ↓")
+    render_podium(sort_cards(results, _current_sort))
 
 # Hero
 st.markdown(
@@ -434,12 +497,9 @@ if results:
             unsafe_allow_html=True,
         )
     with col_sort:
-        sort_by = st.selectbox(
-            "Sort by",
-            ["Rating ↓", "Easiest first", "Would Take Again ↓", "Most Ratings"],
-            index=0,
-            key="sort_select",
-        )
+        _base_sorts = ["Rating ↓", "Easiest first", "Would Take Again ↓", "Most Ratings"]
+        sort_options = (["Most Recent"] + _base_sorts) if last_courses else _base_sorts
+        sort_by = st.selectbox("Sort by", sort_options, index=0, key="sort_select")
 
     sorted_cards = sort_cards(results, sort_by)
 
@@ -447,7 +507,9 @@ if results:
     if missing:
         col_more, col_note = st.columns([1, 3], gap="medium")
         with col_more:
+            st.markdown('<div class="btn-secondary">', unsafe_allow_html=True)
             load_more = st.button("Load More Reviews", use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
         with col_note:
             st.markdown(
                 f'<div style="padding-top:.65rem;font-size:.78rem;color:#334155">'
@@ -457,10 +519,11 @@ if results:
         if load_more:
             with st.spinner("Loading reviews…"):
                 hydrate_snippets(sorted_cards, last_courses, limit=DEFAULT_SNIPPET_BATCH)
+            st.session_state.results = sorted_cards
             st.rerun()
 
     for i, card in enumerate(sorted_cards):
-        render_card(card, i)
+        render_card(card, i, course_filters=last_courses)
 
 else:
     st.markdown(

@@ -194,8 +194,8 @@ async def fetch_professors(school_id: int) -> list[dict]:
 
 # ── Snippets ──────────────────────────────────────────────────────────────────
 
-async def fetch_snippets(professor_id: int, course: str = "") -> list[dict]:
-    """Fetch up to 3 recent review snippets for a professor."""
+async def fetch_snippets(professor_id: int, course: str = "", max_snippets: int = 3) -> list[dict]:
+    """Fetch up to `max_snippets` recent review snippets for a professor."""
     encoded_id = _encode_teacher_id(professor_id)
     headers = {
         **_HEADERS,
@@ -258,7 +258,7 @@ async def fetch_snippets(professor_id: int, course: str = "") -> list[dict]:
             "difficulty": node.get("difficultyRating") or 0,
         })
 
-        if len(snippets) >= 3:
+        if len(snippets) >= max_snippets:
             break
 
     return snippets
