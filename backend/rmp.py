@@ -24,6 +24,13 @@ _HEADERS = {
     "Origin": BASE_URL,
 }
 
+_TEACHER_SEARCH_QUERY = (
+    "query TeacherSearchQuery($query: TeacherSearchQuery!) {"
+    "newSearch { teachers(query: $query, first: 5) {"
+    "edges { node { legacyId firstName lastName numRatings avgRating avgDifficulty "
+    "wouldTakeAgainPercent department school { legacyId } courseCodes { courseName } } } } } }"
+)
+
 _PROF_QUERY = (
     "query RatingsListQuery($id: ID!) {"
     "node(id: $id) {"
@@ -192,6 +199,64 @@ async def fetch_professors(school_id: int) -> list[dict]:
     return professors
 
 
+async def search_professor(name: str, school_id: int) -> dict | None:
+    """Search RMP for *name* at *school_id*. Returns a professor dict or None.
+
+    Used to resolve schedule-only instructors whose profiles were missed by the
+    bulk letter-sweep (pagination limits can skip professors with fewer reviews).
+    """
+    encoded_school = base64.b64encode(f"School-{school_id}".encode()).decode()
+    async with httpx.AsyncClient(headers=_HEADERS, timeout=10) as client:
+        try:
+            resp = await client.post(
+                GRAPHQL_URL,
+                json={
+                    "query": _TEACHER_SEARCH_QUERY,
+                    "variables": {"query": {"text": name, "schoolID": encoded_school}},
+                },
+            )
+            resp.raise_for_status()
+            edges = (
+                resp.json()
+                .get("data", {})
+                .get("newSearch", {})
+                .get("teachers", {})
+                .get("edges", [])
+            )
+        except Exception:
+            return None
+
+    name_tokens = set(re.sub(r"[^a-z ]", "", name.lower()).split())
+    for edge in edges:
+        node = edge.get("node", {})
+        # Must belong to the right school and have at least one rating
+        if int(node.get("school", {}).get("legacyId", 0)) != school_id:
+            continue
+        if (node.get("numRatings") or 0) == 0:
+            continue
+        # Name check: all tokens from the shorter name must appear in the longer one
+        rmp_tokens = set(
+            re.sub(r"[^a-z ]", "", f"{node['firstName']} {node['lastName']}".lower()).split()
+        )
+        if not (name_tokens <= rmp_tokens or rmp_tokens <= name_tokens):
+            continue
+
+        wta = node.get("wouldTakeAgainPercent")
+        if wta is not None and wta <= 0:
+            wta = None
+        return {
+            "id": int(node["legacyId"]),
+            "name": f"{node['firstName']} {node['lastName']}".strip(),
+            "department": node.get("department") or "",
+            "rating": float(node.get("avgRating") or 0),
+            "difficulty": float(node.get("avgDifficulty") or 0),
+            "would_take_again": wta,
+            "num_ratings": int(node.get("numRatings") or 0),
+            "courses": [c["courseName"] for c in (node.get("courseCodes") or [])],
+        }
+    return None
+
+
 # ── Snippets ──────────────────────────────────────────────────────────────────
 
 async def fetch_snippets(professor_id: int, course: str = "", max_snippets: int = 3) -> list[dict]:
@@ -236,6 +301,30 @@ async def fetch_snippets(professor_id: int, course: str = "", max_snippets: int 
             )
         except Exception:
             return []
+
+        # If the course filter matched nothing, retry without it so we always
+        # show some reviews rather than an empty "No review loaded yet" state.
+        if not edges and course:
+            fallback_payload = {
+                "query": _RATINGS_QUERY,
+                "variables": {
+                    "id": encoded_id,
+                    "count": min(num_ratings, 100),
+                    "courseFilter": None,
+                    "cursor": "",
+                },
+            }
+            try:
+                fallback_resp = await client.post(GRAPHQL_URL, json=fallback_payload)
+                edges = (
+                    fallback_resp.json()
+                    .get("data", {})
+                    .get("node", {})
+                    .get("ratings", {})
+                    .get("edges", [])
+                )
+            except Exception:
+                pass
 
     snippets = []
     for edge in edges:
