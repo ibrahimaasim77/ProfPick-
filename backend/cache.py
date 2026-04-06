@@ -100,9 +100,17 @@ def _snippet_path(professor_id: int, course_key: str) -> Path:
 
 
 def get_snippets(professor_id: int, course_key: str) -> list[dict] | None:
-    """Return cached snippets or None if missing/stale."""
+    """Return cached snippets or None if missing/stale/empty.
+
+    An empty list is treated as a cache miss so that a stale zero-result entry
+    (e.g. from a prior failed courseFilter lookup) does not permanently suppress
+    reviews for a professor who has ratings.
+    """
     data = _read_cached(_snippet_path(professor_id, course_key), SNIPPET_TTL_HOURS)
-    return data["snippets"] if data else None
+    if not data:
+        return None
+    snippets = data["snippets"]
+    return snippets if snippets else None
 
 
 def set_snippets(professor_id: int, course_key: str, snippets: list[dict]) -> None:

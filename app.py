@@ -14,6 +14,10 @@ from rmp_data import (
     hydrate_snippets,
     get_professor_cards,
 )
+from backend import fc_schedule as fcs
+from backend.fc_schedule import FC_SCHOOL_ID, FC_TERM_NAME
+
+_FC_SCHOOL = SchoolOption(id=FC_SCHOOL_ID, name="Fullerton College — Fullerton, CA")
 
 st.set_page_config(
     page_title="ProfPick",
@@ -162,6 +166,28 @@ st.markdown(
 
     .course-tag-active{background:rgba(37,99,235,.22)!important;color:#93c5fd!important;
         border-color:rgba(59,130,246,.45)!important;font-weight:700!important;}
+
+    .sched-list{display:flex;flex-direction:column;gap:.3rem;margin-top:.3rem;}
+    .sched-row{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem;
+        background:#07090f;border:1px solid #1e293b;border-radius:8px;
+        padding:.45rem .65rem;font-size:.76rem;}
+    .crn-chip{background:rgba(37,99,235,.12);color:#60a5fa;border:1px solid rgba(59,130,246,.22);
+        border-radius:5px;padding:.12rem .45rem;font-family:'SF Mono',monospace;
+        font-size:.72rem;font-weight:700;flex-shrink:0;}
+    .sched-course{color:#cbd5e1;font-weight:600;flex-shrink:0;}
+    .sched-time{color:#64748b;flex-shrink:0;}
+    .sched-room{color:#475569;font-size:.7rem;}
+    .seats-open{background:rgba(5,150,105,.12);color:#34d399;border:1px solid rgba(52,211,153,.2);
+        border-radius:5px;padding:.1rem .4rem;font-size:.7rem;font-weight:600;margin-left:auto;flex-shrink:0;}
+    .seats-low{background:rgba(245,158,11,.12);color:#fbbf24;border:1px solid rgba(251,191,36,.2);
+        border-radius:5px;padding:.1rem .4rem;font-size:.7rem;font-weight:600;margin-left:auto;flex-shrink:0;}
+    .seats-full{background:rgba(239,68,68,.10);color:#f87171;border:1px solid rgba(248,113,113,.18);
+        border-radius:5px;padding:.1rem .4rem;font-size:.7rem;font-weight:600;margin-left:auto;flex-shrink:0;}
+    .online-badge{background:rgba(139,92,246,.12);color:#a78bfa;border:1px solid rgba(139,92,246,.2);
+        border-radius:5px;padding:.1rem .4rem;font-size:.7rem;font-weight:600;}
+    .teaching-badge{display:inline-flex;align-items:center;gap:.3rem;
+        background:rgba(5,150,105,.10);color:#34d399;border:1px solid rgba(52,211,153,.18);
+        border-radius:6px;padding:.2rem .55rem;font-size:.72rem;font-weight:700;margin-bottom:.5rem;}
     </style>""",
     unsafe_allow_html=True,
 )
@@ -350,6 +376,42 @@ def render_card(
     else:
         recency_chip = ""
 
+    # ── Schedule sections ──────────────────────────────────────────────────────
+    sched_html = ""
+    if card.schedule_sections:
+        teaching_badge = f'<div class="teaching-badge">Teaching {_e(FC_TERM_NAME)}</div>'
+        rows = []
+        for sec in card.schedule_sections[:6]:
+            mtg = sec.primary_meeting()
+            if sec.is_online:
+                time_str = ""
+                room_str = ""
+            else:
+                time_str = _e(mtg.time_str()) if mtg else ""
+                room_str = _e(mtg.location_str()) if mtg else ""
+            if sec.is_full:
+                seats_cls, seats_txt = "seats-full", "Full"
+            elif sec.seats_available <= 5:
+                seats_cls, seats_txt = "seats-low", f"{sec.seats_available} seats"
+            else:
+                seats_cls, seats_txt = "seats-open", f"{sec.seats_available} seats"
+            online_span = '<span class="online-badge">Online</span>' if sec.is_online else ""
+            rows.append(
+                f'<div class="sched-row">'
+                f'<span class="crn-chip">CRN {_e(sec.crn)}</span>'
+                f'<span class="sched-course">{_e(sec.course_code)}</span>'
+                f'{online_span}'
+                f'<span class="sched-time">{time_str}</span>'
+                f'<span class="sched-room">{room_str}</span>'
+                f'<span class="{seats_cls}">{seats_txt}</span>'
+                f'</div>'
+            )
+        sched_html = (
+            f'<div class="section-lbl">Schedule ({_e(FC_TERM_NAME)})</div>'
+            f'{teaching_badge}'
+            f'<div class="sched-list">{"".join(rows)}</div>'
+        )
+
     # Build HTML as a joined list — NO blank lines, NO leading whitespace.
     # A blank line inside st.markdown HTML terminates the HTML block in CommonMark,
     # causing subsequent indented content to be rendered as a code block.
@@ -370,7 +432,8 @@ def render_card(
         f'<span class="stat-chip">Ratings <strong>{card.num_ratings}</strong></span>',
         recency_chip,
         '</div>',
-        '<div class="section-lbl">Courses</div>',
+        sched_html,
+        '<div class="section-lbl">Courses (RMP history)</div>',
         f'<div class="course-wrap">{courses}</div>',
         '<div class="section-lbl">Reviews</div>',
         snips,
@@ -388,60 +451,43 @@ def render_card(
 ensure_state()
 results: list[ProfessorCard] = st.session_state.results
 
-# Podium is the first thing you see when results exist
+# Podium
 if results:
     _current_sort = st.session_state.get("sort_select", "Rating ↓")
     render_podium(sort_cards(results, _current_sort))
 
-# Hero
+# ── Hero ──────────────────────────────────────────────────────────────────────
 st.markdown(
     '<div class="hero">'
     '<div class="hero-title">ProfPick</div>'
-    '<div class="hero-sub">Search your campus · filter by course · rank professors instantly</div>'
+    '<div class="hero-sub">Fullerton College · Rate My Professors + Live Schedule · '
+    f'{_e(FC_TERM_NAME)}</div>'
     '</div>',
     unsafe_allow_html=True,
 )
 
-# Search panel
-col_school, col_courses = st.columns([1, 1], gap="medium")
+# ── Search panel ──────────────────────────────────────────────────────────────
 
-with col_school:
-    selected_name: str | None = st_searchbox(
-        _school_search_fn,
-        key="school_searchbox",
-        placeholder="UCLA, MIT, Ohio State…",
-        label="School",
-        clear_on_submit=False,
-        debounce=200,
-        style_overrides={
-            "wrapper": {"outline": "none"},
-            "searchbox": {
-                "control": {
-                    "backgroundColor": "#0d1117",
-                    "border": "1px solid #1e293b",
-                    "borderRadius": "10px",
-                    "boxShadow": "none",
-                    "outline": "none",
-                },
-                "menuList": {
-                    "backgroundColor": "#0d1117",
-                    "border": "1px solid #1e293b",
-                    "borderRadius": "8px",
-                    "padding": "4px",
-                },
-                "input": {"color": "#e2e8f0"},
-                "singleValue": {"color": "#e2e8f0"},
-                "placeholder": {"color": "#475569"},
-                "option": {
-                    "color": "#cbd5e1",
-                    "backgroundColor": "#0d1117",
-                    "highlightColor": "#1e293b",
-                },
-            },
-        },
+# Load live subject list (cached — fast after first run)
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_subjects() -> list[str]:
+    try:
+        return fcs.get_subjects()
+    except Exception:
+        return []
+
+_fc_subjects = _get_subjects()
+
+col_subj, col_courses = st.columns([1, 1], gap="medium")
+
+with col_subj:
+    _subj_options = ["All subjects"] + _fc_subjects
+    _subj_sel = st.selectbox(
+        "Subject",
+        options=_subj_options,
+        key="subject_select",
     )
-    school_map: dict[str, SchoolOption] = st.session_state.get("school_map", {})
-    selected_school_obj: SchoolOption | None = school_map.get(selected_name) if selected_name else None
+    _selected_subject = "" if _subj_sel == "All subjects" else _subj_sel
 
 with col_courses:
     _available_courses: list[str] = st.session_state.get("available_courses", [])
@@ -454,7 +500,7 @@ with col_courses:
         )
         _course_input_raw = st.text_input(
             "Or type additional codes",
-            placeholder="CSCI 101, MATH 141",
+            placeholder="MATH 141, CSCI 101",
             key="course_text_input",
             label_visibility="collapsed",
         )
@@ -462,88 +508,86 @@ with col_courses:
         _multi_selected = []
         _course_input_raw = st.text_input(
             "Course codes (optional)",
-            placeholder="CSCI 101, MATH 141",
+            placeholder="MATH 141, CSCI 101",
             key="course_text_input",
         )
 
-# Compute current course filters once (used by both manual load and auto-reload)
+# Build course filter: subject + any explicit codes
 _typed_courses = parse_courses(_course_input_raw)
-_current_courses = list(dict.fromkeys(_multi_selected + _typed_courses))
+_base_filter = ([_selected_subject] if _selected_subject else [])
+_current_courses = list(dict.fromkeys(_base_filter + _multi_selected + _typed_courses))
 
-col_btn, col_hint = st.columns([1, 3], gap="medium")
+col_btn, col_toggle = st.columns([1, 2], gap="medium")
 with col_btn:
     load_clicked = st.button("Load Professors", use_container_width=True)
-with col_hint:
-    if selected_school_obj:
-        msg = f"✓ {selected_school_obj.name}"
-        color = "#475569"
-    elif selected_name:
-        msg = "School not found — try searching again"
-        color = "#ef4444"
-    else:
-        msg = "Type a school name above to search"
-        color = "#334155"
-    st.markdown(f'<div style="padding-top:.68rem;font-size:.82rem;color:{color}">{_e(msg)}</div>', unsafe_allow_html=True)
+with col_toggle:
+    _fc_only = st.checkbox(
+        f"Only show professors teaching this semester ({_e(FC_TERM_NAME)})",
+        value=True,
+        key="fc_only_toggle",
+    )
 
+# ── Load logic ────────────────────────────────────────────────────────────────
 if load_clicked:
-    if not selected_school_obj:
-        st.session_state.error = "Search for a school and select it before loading professors."
-        st.session_state.results = []
-    else:
-        with st.spinner(f"Loading professors at {selected_school_obj.name}…"):
-            cards, err = get_professor_cards(
-                school_id=selected_school_obj.id,
-                school_name=selected_school_obj.name,
-                course_filters=_current_courses,
-                snippet_batch_size=DEFAULT_SNIPPET_BATCH,
-            )
-        st.session_state.results      = cards
-        st.session_state.last_school  = selected_school_obj
-        st.session_state.last_courses = _current_courses
-        st.session_state.error        = err
-        # Collect all unique course codes for the multiselect (only on manual load)
-        if cards:
-            st.session_state.available_courses = sorted(
-                {c for card in cards for c in card.courses if c}
-            )
+    with st.spinner("Loading Fullerton College professors…"):
+        cards, err = get_professor_cards(
+            school_id=_FC_SCHOOL.id,
+            school_name=_FC_SCHOOL.name,
+            course_filters=_current_courses,
+            snippet_batch_size=DEFAULT_SNIPPET_BATCH,
+            fc_only=_fc_only,
+        )
+    st.session_state.results      = cards
+    st.session_state.last_school  = _FC_SCHOOL
+    st.session_state.last_courses = _current_courses
+    st.session_state.error        = err
+    if cards:
+        st.session_state.available_courses = sorted(
+            {c for card in cards for c in card.courses if c}
+        )
 
-# Auto-reload when course filter changes (results already loaded, no manual click needed)
-_reload_school: SchoolOption | None = st.session_state.get("last_school")
+# Auto-reload when course/subject filter changes
 if (
     not load_clicked
-    and _reload_school is not None
     and st.session_state.get("results")
     and sorted(_current_courses) != sorted(st.session_state.get("last_courses", []))
 ):
     with st.spinner("Updating professor list…"):
         _ac, _ae = get_professor_cards(
-            school_id=_reload_school.id,
-            school_name=_reload_school.name,
+            school_id=_FC_SCHOOL.id,
+            school_name=_FC_SCHOOL.name,
             course_filters=_current_courses,
             snippet_batch_size=DEFAULT_SNIPPET_BATCH,
+            fc_only=_fc_only,
         )
     st.session_state.results      = _ac
     st.session_state.last_courses = _current_courses
     st.session_state.error        = _ae
     st.rerun()
 
-# Error
+# ── Error ─────────────────────────────────────────────────────────────────────
 if st.session_state.error:
     st.error(st.session_state.error)
 
-# Results
+# ── Results ───────────────────────────────────────────────────────────────────
 if results:
-    last_school: SchoolOption = st.session_state.last_school
-    last_courses: list[str]   = st.session_state.last_courses
-    course_label = ", ".join(last_courses) if last_courses else "All courses"
+    last_courses: list[str] = st.session_state.last_courses
+    teaching_count = sum(1 for c in results if c.schedule_sections)
+    course_label   = ", ".join(last_courses) if last_courses else "All courses"
 
     col_meta, col_sort = st.columns([3, 1], gap="medium")
     with col_meta:
+        teaching_note = (
+            f' · <span style="color:#34d399;font-weight:600">'
+            f'{teaching_count} teaching this semester</span>'
+            if teaching_count else ""
+        )
         st.markdown(
             '<div class="results-bar">'
-            f'<strong>{len(results)}</strong> professors at '
-            f'<span class="rschool">{_e(last_school.name)}</span>'
+            f'<strong>{len(results)}</strong> professors · '
+            f'<span class="rschool">Fullerton College</span>'
             f' · <span style="color:#475569">{_e(course_label)}</span>'
+            f'{teaching_note}'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -579,15 +623,13 @@ if results:
 else:
     st.markdown(
         '<div class="empty-wrap">'
-        '<div class="empty-title">No results yet</div>'
+        '<div class="empty-title">Find your professor at Fullerton College</div>'
         '<div class="empty-steps">'
-        '<div class="step-pill"><div class="step-num">1</div>Type school name</div>'
+        '<div class="step-pill"><div class="step-num">1</div>Pick a subject</div>'
         '<div class="step-arrow">→</div>'
-        '<div class="step-pill"><div class="step-num">2</div>Click a result</div>'
+        '<div class="step-pill"><div class="step-num">2</div>Add course code (optional)</div>'
         '<div class="step-arrow">→</div>'
-        '<div class="step-pill"><div class="step-num">3</div>Add course codes</div>'
-        '<div class="step-arrow">→</div>'
-        '<div class="step-pill"><div class="step-num">4</div>Load Professors</div>'
+        '<div class="step-pill"><div class="step-num">3</div>Load Professors</div>'
         '</div>'
         '</div>',
         unsafe_allow_html=True,
